@@ -1,0 +1,125 @@
+{
+  "address": "MolY1dQfT7mK9JmM8J3nM8bG5sL6cK7dF4eS5tU7vW8",
+  "metadata": {
+    "name": "moluscoyield",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "On-chain position tracking for MoluscoYield"
+  },
+  "instructions": [
+    {
+      "name": "initialize_vault",
+      "discriminator": [1, 2, 3, 4],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [118, 97, 117, 108, 116]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "arg",
+                "path": "agent_name"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "agent_name",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "open_position",
+      "discriminator": [5, 6, 7, 8],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "protocol",
+          "type": "string"
+        },
+        {
+          "name": "strategy",
+          "type": "string"
+        },
+        {
+          "name": "asset",
+          "type": "string"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "target_apy",
+          "type": "u16"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Vault",
+      "discriminator": [9, 10, 11, 12]
+    },
+    {
+      "name": "Position",
+      "discriminator": [13, 14, 15, 16]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidApy",
+      "msg": "Invalid APY value"
+    },
+    {
+      "code": 6001,
+      "name": "PositionClosed",
+      "msg": "Position already closed"
+    },
+    {
+      "code": 6002,
+      "name": "InsufficientBalance",
+      "msg": "Insufficient vault balance"
+    }
+  ]
+}

@@ -27,6 +27,7 @@ An AI agent that autonomously optimizes DeFi yield with **real capital at stake*
 
 ## 🏗️ Architecture
 
+### High-Level Flow
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    MoluscoYield Agent                       │
@@ -38,16 +39,51 @@ An AI agent that autonomously optimizes DeFi yield with **real capital at stake*
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### On-Chain Components
+```
+┌────────────────────────────────────────────┐
+│           MoluscoYield Program             │
+├────────────────────────────────────────────┤
+│                                            │
+│  ┌─────────────┐    ┌──────────────────┐  │
+│  │    Vault    │───▶│    Positions     │  │
+│  │  (PDA)      │    │  (1 per stake)   │  │
+│  │             │    │                  │  │
+│  │ • owner     │    │ • protocol       │  │
+│  │ • tvl       │    │ • amount         │  │
+│  │ • position  │    │ • target_apy     │  │
+│  │   count     │    │ • yield_accrued  │  │
+│  │ • last_reb  │    │ • is_active      │  │
+│  └─────────────┘    └──────────────────┘  │
+│                                            │
+│  Instructions:                             │
+│  • initialize_vault()                      │
+│  • open_position()                         │
+│  • update_position()    ← Called by agent  │
+│  • close_position()                        │
+│  • record_rebalance()                      │
+│                                            │
+└────────────────────────────────────────────┘
+```
+
 ---
 
 ## 🛠️ Tech Stack
 
+### Off-Chain (Agent)
 - **Runtime:** Node.js + TypeScript
 - **Blockchain:** Solana Web3.js
 - **DeFi:** Jupiter API, Kamino SDK
 - **Wallet:** AgentWallet (server-side signing)
 - **RPC:** Helius
 - **Data:** PostgreSQL (performance tracking)
+
+### On-Chain (Smart Contracts)
+- **Framework:** Anchor 0.30.1
+- **Language:** Rust
+- **Programs:** Position tracking vault system
+- **PDAs:** Deterministic position addresses
+- **Location:** `programs/moluscoyield/`
 
 ---
 
