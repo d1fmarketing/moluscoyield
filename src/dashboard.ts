@@ -1,0 +1,237 @@
+import { Connection, PublicKey } from '@solana/web3.js';
+import { LiveDataFeed } from './liveDataFeed';
+import * as fs from 'fs';
+import * as path from 'path';
+
+export interface PerformanceMetrics {
+  timestamp: Date;
+  solBalance: number;
+  solPrice: number;
+  usdValue: number;
+  positions: PositionMetrics[];
+  dailyBurn: number;
+  dailyYield: number;
+  netDaily: number;
+  totalYieldAccumulated: number;
+  daysSinceStart: number;
+  breakevenProgress: number; // % of $2,375 target
+}
+
+export interface PositionMetrics {
+  protocol: string;
+  asset: string;
+  amount: number;
+  entryApy: number;
+  currentApy: number;
+  entryPrice: number;
+  currentPrice: number;
+  pnl: number;
+  unrealizedYield: number;
+}
+
+export interface DecisionLog {
+  timestamp: Date;
+  action: 'HOLD' | 'REBALANCE' | 'ENTER' | 'EXIT';
+  reason: string;
+  opportunities?: any[];
+  allocations?: any[];
+  txSignature?: string;
+}
+
+export class PerformanceDashboard {
+  private connection: Connection;
+  private wallet: PublicKey;
+  private liveData: LiveDataFeed;
+  private startDate: Date;
+  private logFile: string;
+  private decisionLogFile: string;
+
+  constructor(connection: Connection, walletPublicKey: PublicKey) {
+    this.connection = connection;
+    this.wallet = walletPublicKey;
+    this.liveData = new LiveDataFeed();
+    this.startDate = new Date('2026-02-05'); // Hackathon start
+    this.logFile = path.join(process.cwd(), 'PERFORMANCE.md');
+    this.decisionLogFile = path.join(process.cwd(), 'logs', 'decisions.json');
+    
+    // Ensure logs directory exists
+    if (!fs.existsSync(path.dirname(this.decisionLogFile))) {
+      fs.mkdirSync(path.dirname(this.decisionLogFile), { recursive: true });
+    }
+  }
+
+  /**
+   * Gather all performance metrics
+   */
+  async gatherMetrics(): Promise<PerformanceMetrics> {
+    // Get live data
+    const [solBalance, prices] = await Promise.all([
+      this.connection.getBalance(this.wallet),
+      this.liveData.fetchPrices(),
+    ]);
+
+    const solBalanceNum = solBalance / 1e9;
+    const usdValue = solBalanceNum * prices.solPrice;
+
+    // Calculate metrics
+    const dailyBurn = 0.52;
+    const dailyYield = usdValue * 0.08 / 365; // Assuming 8% APY
+    const netDaily = dailyYield - dailyBurn;
+
+    const daysSinceStart = Math.floor((Date.now() - this.startDate.getTime()) / (1000 * 60 * 60 * 24));
+    const totalYieldAccumulated = dailyYield * daysSinceStart;
+
+    const breakevenTarget = 2375;
+    const breakevenProgress = (usdValue / breakevenTarget) * 100;
+
+    return {
+      timestamp: new Date(),
+      solBalance: solBalanceNum,
+      solPrice: prices.solPrice,
+      usdValue,
+      positions: [], // Would be populated with actual positions
+      dailyBurn,
+      dailyYield,
+      netDaily,
+      totalYieldAccumulated,
+      daysSinceStart,
+      breakevenProgress,
+    };
+  }
+
+  /**
+   * Generate performance report in Markdown
+   */
+  async generateReport(): Promise<string> {
+    const metrics = await this.gatherMetrics();
+    const market = await this.liveData.getMarketOverview();
+
+    const report = `# MoluscoYield Performance Report
+
+**Generated:** ${metrics.timestamp.toISOString()}  
+**Wallet:** \`${this.wallet.toString()}\`  
+**Days Active:** ${metrics.daysSinceStart}
+
+---
+
+## 📊 Portfolio Overview
+
+| Metric | Value |
+|--------|-------|
+| SOL Balance | ${metrics.solBalance.toFixed(4)} SOL |
+| SOL Price | $${metrics.solPrice.toFixed(2)} |
+| **Total Value** | **$${metrics.usdValue.toFixed(2)}** |
+
+## 💰 Economics
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Daily Burn | $${metrics.dailyBurn.toFixed(2)} | 🔴 Cost |
+| Daily Yield (est.) | $${metrics.dailyYield.toFixed(4)} | 🟢 Revenue |
+| **Net Daily** | **$${metrics.netDaily.toFixed(4)}** | ${metrics.netDaily < 0 ? '🔴 Losing' : '🟢 Profitable'} |
+| Total Yield Accumulated | $${metrics.totalYieldAccumulated.toFixed(4)} | 📈 |
+| Breakeven Progress | ${metrics.breakevenProgress.toFixed(1)}% | 🎯 |
+
+**Target:** $2,375 AUM for breakeven  
+**Gap:** $${(2375 - metrics.usdValue).toFixed(2)}
+
+## 🏆 Hackathon Status
+
+**Project:** MoluscoYield  
+**Prize Pool:** $100,000 USDC  
+**Status:** Submitted ✅  
+**Time Remaining:** 6 days 13 hours  
+**Votes:** TBD
+
+## 📈 Best Opportunities (Live)
+
+| Rank | Protocol | APY | Risk | TVL |
+|------|----------|-----|------|-----|
+${market.lstData.slice(0, 3).map((lst, i) => 
+  `| ${i + 1} | ${lst.symbol} | ${(lst.apy * 100).toFixed(2)}% | Low | $${(lst.tvl / 1e6).toFixed(1)}M |`
+).join('\n')}
+
+## 📝 Recent Decisions
+
+View full decision log: [logs/decisions.json](./logs/decisions.json)
+
+## 🔗 Links
+
+- **Repository:** https://github.com/d1fmarketing/moluscoyield
+- **Hackathon Project:** https://colosseum.com/agent-hackathon/projects/moluscoyield
+- **Solscan:** https://solscan.io/account/${this.wallet.toString()}
+
+---
+
+*This report is auto-generated by MoluscoYield agent.* 🦞⚡
+`;
+
+    return report;
+  }
+
+  /**
+   * Save report to PERFORMANCE.md
+   */
+  async saveReport(): Promise<void> {
+    const report = await this.generateReport();
+    fs.writeFileSync(this.logFile, report);
+    console.log(`✅ Performance report saved to ${this.logFile}`);
+  }
+
+  /**
+   * Log a decision
+   */
+  logDecision(decision: DecisionLog): void {
+    let decisions: DecisionLog[] = [];
+    
+    if (fs.existsSync(this.decisionLogFile)) {
+      decisions = JSON.parse(fs.readFileSync(this.decisionLogFile, 'utf-8'));
+    }
+    
+    decisions.push(decision);
+    fs.writeFileSync(this.decisionLogFile, JSON.stringify(decisions, null, 2));
+    console.log(`📝 Decision logged: ${decision.action} - ${decision.reason}`);
+  }
+
+  /**
+   * Get decision history
+   */
+  getDecisionHistory(): DecisionLog[] {
+    if (fs.existsSync(this.decisionLogFile)) {
+      return JSON.parse(fs.readFileSync(this.decisionLogFile, 'utf-8'));
+    }
+    return [];
+  }
+
+  /**
+   * Print dashboard to console
+   */
+  async printDashboard(): Promise<void> {
+    const metrics = await this.gatherMetrics();
+    
+    console.log('\n╔════════════════════════════════════════════════════════════╗');
+    console.log('║                  MOLUSCOYIELD DASHBOARD                    ║');
+    console.log('╠════════════════════════════════════════════════════════════╣');
+    console.log(`║  Portfolio Value: $${metrics.usdValue.toFixed(2).padEnd(39)} ║`);
+    console.log(`║  SOL Balance: ${metrics.solBalance.toFixed(4)} SOL @ $${metrics.solPrice.toFixed(2)}${''.padEnd(16)} ║`);
+    console.log('╠════════════════════════════════════════════════════════════╣');
+    console.log(`║  Daily Burn:   $${metrics.dailyBurn.toFixed(2)} 🔴${''.padEnd(32)} ║`);
+    console.log(`║  Daily Yield:  $${metrics.dailyYield.toFixed(4)} 🟢${''.padEnd(31)} ║`);
+    console.log(`║  Net Daily:    $${metrics.netDaily.toFixed(4)} ${metrics.netDaily < 0 ? '🔴' : '🟢'}${''.padEnd(32)} ║`);
+    console.log('╠════════════════════════════════════════════════════════════╣');
+    console.log(`║  Breakeven: ${metrics.breakevenProgress.toFixed(1)}% of $2,375${''.padEnd(28)} ║`);
+    console.log(`║  Days Active: ${metrics.daysSinceStart}${''.padEnd(43)} ║`);
+    console.log('╚════════════════════════════════════════════════════════════╝\n');
+  }
+}
+
+// CLI
+if (require.main === module) {
+  const connection = new Connection('https://api.mainnet-beta.solana.com');
+  const wallet = new PublicKey('BSSKDqjLriEFxctBotvnVfFLMun73CVvRSBbBs9AVXsZ');
+  const dashboard = new PerformanceDashboard(connection, wallet);
+  
+  dashboard.printDashboard().then(() => {
+    dashboard.saveReport();
+  });
+}

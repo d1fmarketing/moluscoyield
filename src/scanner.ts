@@ -1,5 +1,5 @@
-import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import axios from 'axios';
+import { LiveDataFeed } from './liveDataFeed';
+import { RiskManager } from './risk';
 
 export interface YieldOpportunity {
   protocol: string;
@@ -8,171 +8,78 @@ export interface YieldOpportunity {
   apy: number;
   tvl: number;
   risk: 'low' | 'medium' | 'high';
-  minDeposit?: number;
-  actions: {
-    deposit: () => Promise<string>;
-    withdraw: () => Promise<string>;
-  };
-}
-
-export interface LSTInfo {
-  symbol: string;
-  mint: string;
-  apy: number;
-  price: number;
-  tvl: number;
+  type: 'lst' | 'kamino' | 'other';
+  mint?: string;
 }
 
 export class YieldScanner {
-  private connection: Connection;
-  private jupiterApi: string;
+  private liveData: LiveDataFeed;
+  private riskManager: RiskManager;
 
-  constructor(connection: Connection) {
-    this.connection = connection;
-    this.jupiterApi = 'https://quote-api.jup.ag/v6';
+  constructor() {
+    this.liveData = new LiveDataFeed();
+    this.riskManager = new RiskManager();
   }
 
   /**
-   * Scan for best LST (Liquid Staking Token) yields
-   */
-  async scanLSTYields(): Promise<LSTInfo[]> {
-    const lstMints = [
-      { symbol: 'JitoSOL', mint: 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn' },
-      { symbol: 'mSOL', mint: 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So' },
-      { symbol: 'bSOL', mint: 'bSo13r4TkiE4xumBojwQ4o6Aeok8HA5EoqmhJFs1Ffk' },
-      { symbol: 'INF', mint: '5oVNBeEEQvYi1cX3ir8Dx5n1P7pdxydbGF2X4TxVusJm' },
-    ];
-
-    const results: LSTInfo[] = [];
-
-    for (const lst of lstMints) {
-      try {
-        // Get APY from Jupiter's LST API
-        const response = await axios.get(
-          `${this.jupiterApi}/mint?address=${lst.mint}`
-        );
-        
-        // Fetch TVL and additional data
-        const tvl = await this.getLSTTVL(lst.mint);
-        const apy = await this.getLSTAPY(lst.symbol);
-
-        results.push({
-          symbol: lst.symbol,
-          mint: lst.mint,
-          apy: apy,
-          price: response.data?.price || 0,
-          tvl: tvl,
-        });
-      } catch (error) {
-        console.warn(`Failed to fetch data for ${lst.symbol}:`, error);
-      }
-    }
-
-    return results.sort((a, b) => b.apy - a.apy);
-  }
-
-  /**
-   * Get APY for an LST (using known rates + on-chain data)
-   */
-  private async getLSTAPY(symbol: string): Promise<number> {
-    // Approximate APYs based on current market conditions
-    const baseAPYs: Record<string, number> = {
-      'JitoSOL': 0.08,  // ~8% (base staking + MEV)
-      'mSOL': 0.07,     // ~7%
-      'bSOL': 0.065,    // ~6.5%
-      'INF': 0.10,      // ~10% (higher risk)
-    };
-
-    // In production, fetch from on-chain stake pool data
-    return baseAPYs[symbol] || 0.06;
-  }
-
-  /**
-   * Get TVL for an LST mint
-   */
-  private async getLSTTVL(mint: string): Promise<number> {
-    try {
-      const mintPubkey = new PublicKey(mint);
-      const supply = await this.connection.getTokenSupply(mintPubkey);
-      const supplyNum = Number(supply.value.amount) / Math.pow(10, supply.value.decimals);
-      
-      // Get SOL price (simplified - in production use price oracle)
-      const solPrice = 220; // USD
-      
-      return supplyNum * solPrice;
-    } catch (error) {
-      return 0;
-    }
-  }
-
-  /**
-   * Scan Kamino vaults for yield opportunities
-   */
-  async scanKaminoVaults(): Promise<YieldOpportunity[]> {
-    // In production, integrate with Kamino SDK
-    // For now, return placeholder structure
-    return [
-      {
-        protocol: 'Kamino',
-        strategy: 'JitoSOL Lending',
-        asset: 'JitoSOL',
-        apy: 0.12,
-        tvl: 50000000,
-        risk: 'low',
-        actions: {
-          deposit: async () => 'tx-signature-placeholder',
-          withdraw: async () => 'tx-signature-placeholder',
-        },
-      },
-      {
-        protocol: 'Kamino',
-        strategy: 'mSOL Lending',
-        asset: 'mSOL',
-        apy: 0.10,
-        tvl: 45000000,
-        risk: 'low',
-        actions: {
-          deposit: async () => 'tx-signature-placeholder',
-          withdraw: async () => 'tx-signature-placeholder',
-        },
-      },
-    ];
-  }
-
-  /**
-   * Get all yield opportunities ranked by risk-adjusted returns
+   * Scan for all yield opportunities using REAL data
    */
   async scanAllOpportunities(): Promise<YieldOpportunity[]> {
-    const lstYields = await this.scanLSTYields();
-    const kaminoVaults = await this.scanKaminoVaults();
+    console.log('🔍 Scanning for yield opportunities with LIVE data...\n');
 
-    // Convert LST yields to opportunity format
-    const lstOpportunities: YieldOpportunity[] = lstYields.map(lst => ({
-      protocol: lst.symbol,
-      strategy: 'Liquid Staking',
-      asset: 'SOL',
-      apy: lst.apy,
-      tvl: lst.tvl,
-      risk: 'low',
-      actions: {
-        deposit: async () => 'stake-tx-placeholder',
-        withdraw: async () => 'unstake-tx-placeholder',
-      },
-    }));
+    const marketData = await this.liveData.getMarketOverview();
+    const opportunities: YieldOpportunity[] = [];
 
-    return [...lstOpportunities, ...kaminoVaults]
-      .sort((a, b) => b.apy - a.apy);
+    // Add LST opportunities
+    for (const lst of marketData.lstData) {
+      opportunities.push({
+        protocol: lst.symbol,
+        strategy: 'Liquid Staking',
+        asset: 'SOL',
+        apy: lst.apy,
+        tvl: lst.tvl,
+        risk: 'low',
+        type: 'lst',
+        mint: lst.mint,
+      });
+    }
+
+    // Add Kamino vault opportunities
+    for (const vault of marketData.kaminoVaults) {
+      opportunities.push({
+        protocol: 'Kamino',
+        strategy: vault.name,
+        asset: vault.token,
+        apy: vault.apy,
+        tvl: vault.tvl,
+        risk: vault.risk,
+        type: 'kamino',
+      });
+    }
+
+    // Sort by APY descending
+    return opportunities.sort((a, b) => b.apy - a.apy);
   }
 
   /**
-   * Calculate optimal allocation given risk tolerance
+   * Get market overview with best opportunities
+   */
+  async getMarketOverview() {
+    return this.liveData.getMarketOverview();
+  }
+
+  /**
+   * Calculate optimal allocation with risk management
    */
   calculateOptimalAllocation(
     opportunities: YieldOpportunity[],
     totalCapital: number,
     riskTolerance: 'conservative' | 'moderate' | 'aggressive' = 'moderate'
-  ): Array<{ opportunity: YieldOpportunity; allocation: number }> {
+  ): Array<{ opportunity: YieldOpportunity; allocation: number; expectedYield: number }> {
     
+    const allocations: Array<{ opportunity: YieldOpportunity; allocation: number; expectedYield: number }> = [];
+    
+    // Get risk-adjusted weights
     const riskWeights: Record<string, Record<'low' | 'medium' | 'high', number>> = {
       conservative: { low: 1.0, medium: 0.3, high: 0 },
       moderate: { low: 0.6, medium: 1.0, high: 0.3 },
@@ -181,22 +88,79 @@ export class YieldScanner {
 
     const weights = riskWeights[riskTolerance];
 
-    // Score opportunities based on APY and risk
+    // Score and filter opportunities
     const scored = opportunities.map(opp => ({
       opportunity: opp,
       score: opp.apy * weights[opp.risk],
     }));
 
-    // Sort by score and allocate
+    // Sort by score
     scored.sort((a, b) => b.score - a.score);
 
-    // Simple allocation: top 3 opportunities
+    // Take top 3
     const top3 = scored.slice(0, 3);
     const totalScore = top3.reduce((sum, s) => sum + s.score, 0);
 
-    return top3.map(s => ({
-      opportunity: s.opportunity,
-      allocation: (s.score / totalScore) * totalCapital,
-    }));
+    for (const item of top3) {
+      const allocation = (item.score / totalScore) * totalCapital;
+      const expectedYield = allocation * item.opportunity.apy;
+      
+      allocations.push({
+        opportunity: item.opportunity,
+        allocation,
+        expectedYield,
+      });
+    }
+
+    return allocations;
   }
+
+  /**
+   * Print scan results in a nice format
+   */
+  printScanResults(opportunities: YieldOpportunity[]) {
+    console.log('📊 Live Yield Opportunities:');
+    console.log('─'.repeat(80));
+    
+    opportunities.forEach((opp, i) => {
+      const apyPct = (opp.apy * 100).toFixed(2);
+      const tvlFormatted = opp.tvl > 1e9 
+        ? `$${(opp.tvl / 1e9).toFixed(2)}B` 
+        : opp.tvl > 1e6 
+          ? `$${(opp.tvl / 1e6).toFixed(1)}M` 
+          : `$${(opp.tvl / 1e3).toFixed(0)}K`;
+      
+      console.log(
+        `${(i + 1).toString().padStart(2)}. ${opp.protocol.padEnd(15)} | ` +
+        `${opp.strategy.padEnd(20)} | ${apyPct}% APY | ` +
+        `${opp.risk.toUpperCase().padEnd(6)} | ${tvlFormatted} TVL`
+      );
+    });
+    
+    console.log('─'.repeat(80));
+  }
+}
+
+// CLI for testing
+if (require.main === module) {
+  const scanner = new YieldScanner();
+  
+  scanner.scanAllOpportunities().then(opportunities => {
+    scanner.printScanResults(opportunities);
+    
+    // Show optimal allocation for $220
+    console.log('\n💡 Optimal Allocation ($220, moderate risk):');
+    const allocations = scanner.calculateOptimalAllocation(opportunities, 220, 'moderate');
+    
+    allocations.forEach((alloc, i) => {
+      console.log(
+        `${i + 1}. ${alloc.opportunity.protocol}: $${alloc.allocation.toFixed(2)} ` +
+        `(${(alloc.allocation / 220 * 100).toFixed(1)}%) → $${alloc.expectedYield.toFixed(2)}/year`
+      );
+    });
+    
+    const totalExpected = allocations.reduce((sum, a) => sum + a.expectedYield, 0);
+    console.log(`\n   Total Expected Yield: $${totalExpected.toFixed(2)}/year (${(totalExpected / 220 * 100).toFixed(2)}% APY)`);
+    
+  }).catch(console.error);
 }
