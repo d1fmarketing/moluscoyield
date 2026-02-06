@@ -63,7 +63,8 @@ export class LiveDataFeed {
       for (const [mint, data] of Object.entries(apyData)) {
         if (lstMappings[mint]) {
           // Convert basis points to decimal APY
-          const apy = typeof data.apy === 'number' ? data.apy / 100 : 0.08;
+          const apyData = data as { apy?: number };
+          const apy = typeof apyData.apy === 'number' ? apyData.apy / 100 : 0.08;
           
           results.push({
             symbol: lstMappings[mint].symbol,
