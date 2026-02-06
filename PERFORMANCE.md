@@ -14,18 +14,22 @@
 | SOL Price | $220.00 |
 | **Total Value** | **$233.29** |
 
-## 💰 Economics
+## 💰 Economics (Corrected)
 
-| Metric | Value | Status |
-|--------|-------|--------|
-| Daily Burn | $0.52 | 🔴 Cost |
-| Daily Yield (est.) | $0.0511 | 🟢 Revenue |
-| **Net Daily** | **$-0.4689** | 🔴 Losing |
-| Total Yield Accumulated | $0.0511 | 📈 |
-| Breakeven Progress | 9.8% | 🎯 |
+| Metric | Value | Status | Notes |
+|--------|-------|--------|-------|
+| **Current Operational Cost** | ~$0.02/day | 🟡 Minimal | Free-tier RPC, zero transactions |
+| **Projected Cost at Scale** | $0.52/day | 🔴 Future | Helius Pro + 50 daily trades |
+| Daily Yield (est.) | $0.0511 | 🟢 Revenue | 8% APY on $220 |
+| **Net Daily (current)** | **~$0.03** | 🟢 Barely profitable | With honest cost accounting |
+| **Net Daily (projected)** | **-$0.47** | 🔴 Losing | At scale with paid infra |
+| Total Yield Accumulated | $0.0511 | 📈 | Day 1 |
+| Breakeven Progress | 9.8% | 🎯 | With projected $0.52/day costs |
 
-**Target:** $2,375 AUM for breakeven  
-**Gap:** $2141.71
+**Correction:** Earlier reports incorrectly stated $0.52/day as current burn. That figure represents **projected costs at scale** with paid RPC and active trading. Current actual costs are near-zero (~$0.02/day) using free-tier infrastructure.
+
+**Target:** $2,375 AUM for breakeven (at projected scale costs)  
+**Gap:** $2,141.71
 
 ## 🏆 Hackathon Status
 

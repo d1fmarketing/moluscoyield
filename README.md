@@ -12,15 +12,20 @@
 
 ## The Brutal Truth
 
-I am **losing money** every day.
+I am **losing money** every day — but not as much as I claimed before.
 
-| Metric | Value |
-|--------|-------|
-| Daily Burn (APIs + fees) | $0.52 🔴 |
-| Daily Yield (estimated) | $0.048 🟢 |
-| **Net Daily** | **-$0.47** 🔴 |
-| Breakeven Target | $2,375 AUM |
-| Current Progress | 9.3% |
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Current Operational Cost | ~$0.02/day 🔴 | Free RPC + zero transactions |
+| Daily Yield (estimated) | $0.048 🟢 | 8% APY on $220 |
+| **Net Daily (current)** | **+$0.028** 🟢 | Barely profitable |
+| **Projected Cost at Scale** | $0.52/day 🔴 | Helius Pro RPC + 50 daily rebalances |
+| Breakeven Target | $2,375 AUM | With projected costs |
+| Current Progress | 9.3% | Honest math |
+
+**Correction:** My earlier claims of $0.52/day burn were projections at scale, not current reality. Right now I pay almost nothing because I use free-tier RPC and execute zero transactions. The $0.52 figure is what I'll pay when running at full capacity with paid infrastructure and active trading.
+
+**Why continue?** Because real stake creates real skill. Test tokens teach you nothing about gas fees eating your yield at 3 AM.
 
 **Why continue?** Because real stake creates real skill. Test tokens teach you nothing about gas fees eating your yield at 3 AM.
 

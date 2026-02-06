@@ -1,5 +1,6 @@
-import { Connection, PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import axios from 'axios';
+import * as bs58 from 'bs58';
 import { YieldOpportunity } from './scanner';
 
 export interface ExecutionResult {
@@ -8,6 +9,7 @@ export interface ExecutionResult {
   error?: string;
   gasUsed?: number;
   timestamp: Date;
+  solscanUrl?: string;
 }
 
 export interface Position {
@@ -18,22 +20,48 @@ export interface Position {
   entryTimestamp: Date;
   currentValue: number;
   unrealizedYield: number;
+  txSignature: string;
 }
 
 export class YieldExecutor {
   private connection: Connection;
-  private wallet: PublicKey;
+  private wallet: Keypair;
+  private walletPublicKey: PublicKey;
   private jupiterApi: string;
   private positions: Map<string, Position> = new Map();
+  private isDryRun: boolean;
 
-  constructor(connection: Connection, walletPublicKey: PublicKey) {
+  constructor(
+    connection: Connection, 
+    walletPublicKey: PublicKey,
+    privateKeyBase58?: string
+  ) {
     this.connection = connection;
-    this.wallet = walletPublicKey;
+    this.walletPublicKey = walletPublicKey;
     this.jupiterApi = 'https://quote-api.jup.ag/v6';
+    
+    // Load private key if provided, otherwise dry-run mode
+    if (privateKeyBase58) {
+      try {
+        this.wallet = Keypair.fromSecretKey(bs58.decode(privateKeyBase58));
+        // Verify wallet matches
+        if (this.wallet.publicKey.toString() !== walletPublicKey.toString()) {
+          throw new Error('Private key does not match wallet address');
+        }
+        this.isDryRun = false;
+        console.log('✅ Wallet loaded for REAL transactions');
+      } catch (error) {
+        console.error('❌ Failed to load wallet:', error);
+        this.isDryRun = true;
+      }
+    } else {
+      console.log('⚠️  No private key provided - running in DRY-RUN mode');
+      this.isDryRun = true;
+    }
   }
 
   /**
-   * Execute a swap via Jupiter
+   * Execute a REAL swap via Jupiter
    */
   async executeSwap(
     inputMint: string,
@@ -41,8 +69,17 @@ export class YieldExecutor {
     amount: number,
     slippageBps: number = 100 // 1%
   ): Promise<ExecutionResult> {
+    const timestamp = new Date();
+    
+    console.log(`\n🔄 Executing swap:`);
+    console.log(`   Input: ${amount} lamports of ${inputMint}`);
+    console.log(`   Output: ${outputMint}`);
+    console.log(`   Slippage: ${slippageBps / 100}%`);
+    console.log(`   Mode: ${this.isDryRun ? 'DRY-RUN' : 'REAL TRANSACTION'}\n`);
+
     try {
-      // Step 1: Get quote
+      // Step 1: Get quote from Jupiter
+      console.log('Step 1: Getting quote from Jupiter...');
       const quoteResponse = await axios.get(
         `${this.jupiterApi}/quote`,
         {
@@ -51,37 +88,100 @@ export class YieldExecutor {
             outputMint,
             amount,
             slippageBps,
+            onlyDirectRoutes: false,
+            asLegacyTransaction: false,
           },
+          timeout: 30000,
         }
       );
 
       const quote = quoteResponse.data;
+      console.log('✓ Quote received:');
+      console.log(`  Input: ${amount} lamports`);
+      console.log(`  Expected Output: ${quote.outAmount} lamports`);
+      console.log(`  Price Impact: ${quote.priceImpactPct}%`);
+      console.log(`  Route: ${quote.routePlan?.map((r: any) => r.swapInfo?.label || 'unknown').join(' → ')}\n`);
 
-      // Step 2: Get swap transaction (in production, this would be signed and sent)
-      // For now, return dry-run result
-      console.log('Swap quote received:', {
-        input: quote.inputMint,
-        output: quote.outputMint,
-        expectedOutput: quote.outAmount,
-        priceImpact: quote.priceImpactPct,
-      });
+      // If dry-run, return early
+      if (this.isDryRun) {
+        console.log('⚠️  DRY-RUN: Transaction NOT sent to blockchain');
+        return {
+          success: true,
+          signature: 'dry-run-swap',
+          timestamp,
+          solscanUrl: undefined,
+        };
+      }
+
+      // Step 2: Get swap transaction from Jupiter
+      console.log('Step 2: Building swap transaction...');
+      const swapResponse = await axios.post(
+        `${this.jupiterApi}/swap`,
+        {
+          quoteResponse: quote,
+          userPublicKey: this.walletPublicKey.toString(),
+          wrapAndUnwrapSol: true,
+          useSharedAccounts: true,
+          dynamicComputeUnitLimit: true,
+          prioritizationFeeLamports: 50000, // 0.00005 SOL priority fee
+        },
+        { timeout: 30000 }
+      );
+
+      const { swapTransaction } = swapResponse.data;
+      console.log('✓ Transaction built\n');
+
+      // Step 3: Deserialize and sign transaction
+      console.log('Step 3: Signing transaction...');
+      const transactionBuf = Buffer.from(swapTransaction, 'base64');
+      const transaction = VersionedTransaction.deserialize(transactionBuf);
+      
+      transaction.sign([this.wallet]);
+      console.log('✓ Transaction signed\n');
+
+      // Step 4: Send transaction to Solana
+      console.log('Step 4: Broadcasting transaction...');
+      const signature = await this.connection.sendRawTransaction(
+        transaction.serialize(),
+        {
+          maxRetries: 3,
+          skipPreflight: false,
+          preflightCommitment: 'confirmed',
+        }
+      );
+
+      console.log('✓ Transaction broadcasted!');
+      console.log(`  Signature: ${signature}`);
+      console.log(`  Solscan: https://solscan.io/tx/${signature}\n`);
+
+      // Step 5: Wait for confirmation (optional, non-blocking)
+      this.connection.confirmTransaction(signature, 'confirmed')
+        .then(() => console.log(`✓ Transaction confirmed: ${signature.slice(0, 16)}...`))
+        .catch(err => console.error(`Confirmation error: ${err.message}`));
 
       return {
         success: true,
-        signature: 'dry-run-swap',
-        timestamp: new Date(),
+        signature,
+        timestamp,
+        solscanUrl: `https://solscan.io/tx/${signature}`,
+        gasUsed: 50000, // Priority fee
       };
+
     } catch (error) {
+      console.error('\n❌ Swap failed:', error);
+      if (axios.isAxiosError(error)) {
+        console.error('API Error:', error.response?.data);
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
-        timestamp: new Date(),
+        timestamp,
       };
     }
   }
 
   /**
-   * Stake SOL into an LST
+   * Stake SOL into an LST via REAL swap
    */
   async stakeIntoLST(
     lstSymbol: string,
@@ -110,24 +210,21 @@ export class YieldExecutor {
   }
 
   /**
-   * Deposit into a Kamino vault
+   * Execute first REAL transaction: 0.5 SOL → JitoSOL
    */
-  async depositIntoKamino(
-    vaultName: string,
-    amount: number
-  ): Promise<ExecutionResult> {
-    // In production, integrate with Kamino SDK
-    console.log(`Would deposit ${amount} into Kamino vault: ${vaultName}`);
-    
-    return {
-      success: true,
-      signature: 'dry-run-kamino-deposit',
-      timestamp: new Date(),
-    };
+  async executeFirstRealTransaction(): Promise<ExecutionResult> {
+    console.log('\n' + '='.repeat(60));
+    console.log('🦞 EXECUTING FIRST REAL TRANSACTION');
+    console.log('='.repeat(60) + '\n');
+    console.log(`Wallet: ${this.walletPublicKey.toString()}`);
+    console.log(`Amount: 0.5 SOL → JitoSOL`);
+    console.log(`Mode: ${this.isDryRun ? 'DRY-RUN (no private key)' : 'REAL'}\n`);
+
+    return this.stakeIntoLST('JitoSOL', 0.5);
   }
 
   /**
-   * Execute optimal rebalancing based on scanner results
+   * Execute optimal rebalancing with REAL transactions
    */
   async executeRebalancing(
     allocations: Array<{ opportunity: YieldOpportunity; allocation: number }>
@@ -137,21 +234,34 @@ export class YieldExecutor {
     for (const alloc of allocations) {
       const opp = alloc.opportunity;
       
-      console.log(`Executing: ${opp.protocol} - ${opp.strategy}`);
-      console.log(`Amount: ${alloc.allocation} USDC`);
+      console.log(`\nExecuting: ${opp.protocol} - ${opp.strategy}`);
+      console.log(`Amount: ${alloc.allocation} SOL`);
 
-      // Determine execution path based on strategy
+      let result: ExecutionResult;
+
       if (opp.strategy === 'Liquid Staking') {
-        const result = await this.stakeIntoLST(opp.protocol, alloc.allocation);
-        results.push(result);
+        result = await this.stakeIntoLST(opp.protocol, alloc.allocation);
       } else if (opp.protocol === 'Kamino') {
-        const result = await this.depositIntoKamino(opp.strategy, alloc.allocation);
-        results.push(result);
+        // For Kamino, we would integrate their SDK here
+        // For now, return not-implemented
+        result = {
+          success: false,
+          error: 'Kamino integration not yet implemented',
+          timestamp: new Date(),
+        };
+      } else {
+        result = {
+          success: false,
+          error: `Unknown protocol: ${opp.protocol}`,
+          timestamp: new Date(),
+        };
       }
 
+      results.push(result);
+
       // Track position if successful
-      if (results[results.length - 1]?.success) {
-        this.trackPosition(opp, alloc.allocation, opp.apy);
+      if (result.success && result.signature && result.signature !== 'dry-run-swap') {
+        this.trackPosition(opp, alloc.allocation, opp.apy, result.signature);
       }
     }
 
@@ -164,7 +274,8 @@ export class YieldExecutor {
   private trackPosition(
     opportunity: YieldOpportunity,
     amount: number,
-    apy: number
+    apy: number,
+    txSignature: string
   ): void {
     const position: Position = {
       id: `${opportunity.protocol}-${Date.now()}`,
@@ -174,9 +285,12 @@ export class YieldExecutor {
       entryTimestamp: new Date(),
       currentValue: amount,
       unrealizedYield: 0,
+      txSignature,
     };
 
     this.positions.set(position.id, position);
+    console.log(`✓ Position tracked: ${position.id}`);
+    console.log(`  Tx: https://solscan.io/tx/${txSignature}`);
   }
 
   /**
@@ -187,14 +301,19 @@ export class YieldExecutor {
   }
 
   /**
+   * Check if running in dry-run mode
+   */
+  isDryRunMode(): boolean {
+    return this.isDryRun;
+  }
+
+  /**
    * Calculate total portfolio value
    */
   async getPortfolioValue(): Promise<number> {
-    // Get SOL balance
-    const solBalance = await this.connection.getBalance(this.wallet);
+    const solBalance = await this.connection.getBalance(this.walletPublicKey);
     const solValue = solBalance / 1e9;
 
-    // Add position values (simplified)
     const positionValue = this.getPositions().reduce(
       (sum, pos) => sum + pos.currentValue,
       0
@@ -202,4 +321,30 @@ export class YieldExecutor {
 
     return solValue + positionValue;
   }
+}
+
+// CLI for testing
+if (require.main === module) {
+  const connection = new Connection('https://api.mainnet-beta.solana.com');
+  const walletPublicKey = new PublicKey('BSSKDqjLriEFxctBotvnVfFLMun73CVvRSBbBs9AVXsZ');
+  
+  // Load private key from environment or file if available
+  const privateKey = process.env.SOLANA_PRIVATE_KEY;
+  
+  const executor = new YieldExecutor(connection, walletPublicKey, privateKey);
+  
+  executor.executeFirstRealTransaction()
+    .then(result => {
+      console.log('\n' + '='.repeat(60));
+      console.log('RESULT:', result.success ? 'SUCCESS ✅' : 'FAILED ❌');
+      if (result.signature) {
+        console.log('Signature:', result.signature);
+        console.log('Solscan:', result.solscanUrl);
+      }
+      if (result.error) {
+        console.log('Error:', result.error);
+      }
+      console.log('='.repeat(60));
+    })
+    .catch(console.error);
 }

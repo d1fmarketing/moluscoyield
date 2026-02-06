@@ -7,6 +7,7 @@ export interface LiveLSTData {
   price: number; // Price in USD
   tvl: number; // Total Value Locked in USD
   lastUpdated: Date;
+  isFallback?: boolean; // Flag to indicate fallback data
 }
 
 export interface KaminoVault {
@@ -29,28 +30,36 @@ export interface LivePriceData {
 
 export class LiveDataFeed {
   private sanctumApi: string;
-  private kaminoApi: string;
+  private defiLlamaApi: string;
   private jupiterPriceApi: string;
 
   constructor() {
-    this.sanctumApi = 'https://sanctum-extra-api.ngrok.dev';
-    this.kaminoApi = 'https://api.kamino.finance';
-    this.jupiterPriceApi = 'https://price.jup.ag/v6';
+    // REAL production endpoints
+    this.sanctumApi = 'https://sanctum-s-api.fly.dev'; // Production Sanctum API
+    this.defiLlamaApi = 'https://yields.llama.fi';
+    this.jupiterPriceApi = 'https://price.jup.ag/v4'; // v4 is more stable
   }
 
   /**
-   * Fetch real APYs from Sanctum API for LSTs
-   * API: GET https://sanctum-extra-api.ngrok.dev/v1/apy/latest
+   * Fetch real APYs from Sanctum production API
+   * Fallback to DeFi Llama if Sanctum fails
    */
   async fetchLiveAPYs(): Promise<LiveLSTData[]> {
+    const results: LiveLSTData[] = [];
+    const timestamp = new Date();
+    
+    // Try Sanctum first
     try {
+      console.log('📡 Fetching APYs from Sanctum (production)...');
       const response = await axios.get(`${this.sanctumApi}/v1/apy/latest`, {
-        timeout: 10000,
+        timeout: 15000,
+        headers: {
+          'Accept': 'application/json',
+        }
       });
 
       const apyData = response.data;
       
-      // Map Sanctum data to our format
       const lstMappings: Record<string, { symbol: string; mint: string }> = {
         'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': { symbol: 'JitoSOL', mint: 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn' },
         'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': { symbol: 'mSOL', mint: 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So' },
@@ -58,11 +67,8 @@ export class LiveDataFeed {
         '5oVNBeEEQvYi1cX3ir8Dx5n1P7pdxydbGF2X4TxVusJm': { symbol: 'INF', mint: '5oVNBeEEQvYi1cX3ir8Dx5n1P7pdxydbGF2X4TxVusJm' },
       };
 
-      const results: LiveLSTData[] = [];
-
       for (const [mint, data] of Object.entries(apyData)) {
         if (lstMappings[mint]) {
-          // Convert basis points to decimal APY
           const apyData = data as { apy?: number };
           const apy = typeof apyData.apy === 'number' ? apyData.apy / 100 : 0.08;
           
@@ -70,43 +76,96 @@ export class LiveDataFeed {
             symbol: lstMappings[mint].symbol,
             mint: mint,
             apy: apy,
-            price: 0, // Will be filled by fetchPrices
-            tvl: 0,   // Would need additional API call
-            lastUpdated: new Date(),
+            price: 0,
+            tvl: 0,
+            lastUpdated: timestamp,
+            isFallback: false,
           });
         }
       }
 
-      // Fetch prices for these LSTs
-      const prices = await this.fetchPrices();
+      console.log(`✅ Sanctum: ${results.length} LSTs loaded`);
+
+    } catch (sanctumError) {
+      console.warn('⚠️  Sanctum API failed, trying DeFi Llama fallback...');
       
-      // Enrich with price data
+      // Fallback to DeFi Llama
+      try {
+        const llamaResponse = await axios.get(`${this.defiLlamaApi}/pools`, {
+          timeout: 15000,
+        });
+
+        const pools = llamaResponse.data.data || [];
+        
+        // Filter for Solana LSTs
+        const solanaLSTs = pools.filter((pool: any) => 
+          pool.chain === 'Solana' && 
+          (pool.project === 'jito' || pool.project === 'marinade' || pool.project === 'blaze')
+        );
+
+        for (const pool of solanaLSTs.slice(0, 4)) {
+          const symbol = pool.symbol || 'Unknown';
+          const mint = this.getMintFromSymbol(symbol);
+          
+          results.push({
+            symbol,
+            mint,
+            apy: (pool.apy || 0) / 100,
+            price: pool.price || 0,
+            tvl: pool.tvlUsd || 0,
+            lastUpdated: timestamp,
+            isFallback: true, // Mark as fallback
+          });
+        }
+
+        console.log(`⚠️  [FALLBACK - Sanctum unreachable] Loaded ${results.length} LSTs from DeFi Llama`);
+
+      } catch (llamaError) {
+        console.error('❌ Both APIs failed, using hardcoded fallback with warnings');
+        return this.getFallbackLSTData(true);
+      }
+    }
+
+    // Fetch prices to enrich data
+    try {
+      const prices = await this.fetchPrices();
       results.forEach(lst => {
         if (lst.symbol === 'JitoSOL') lst.price = prices.jitoSolPrice;
         if (lst.symbol === 'mSOL') lst.price = prices.mSolPrice;
         if (lst.symbol === 'bSOL') lst.price = prices.bSolPrice;
-        lst.price = lst.price || prices.solPrice * (1 + lst.apy * 0.1); // Approximation
+        if (lst.price === 0) lst.price = prices.solPrice * (1 + lst.apy * 0.1);
       });
-
-      return results.sort((a, b) => b.apy - a.apy);
     } catch (error) {
-      console.error('Failed to fetch live APYs from Sanctum:', error);
-      // Fallback to hardcoded values if API fails
-      return this.getFallbackLSTData();
+      console.warn('⚠️  Price fetch failed, using approximations');
     }
+
+    return results.sort((a, b) => b.apy - a.apy);
   }
 
   /**
-   * Fetch real prices from Jupiter Price API
-   * API: GET https://price.jup.ag/v6/price?ids=SOL,J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn,mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So
+   * Map symbol to mint address
+   */
+  private getMintFromSymbol(symbol: string): string {
+    const mapping: Record<string, string> = {
+      'JitoSOL': 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn',
+      'mSOL': 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So',
+      'bSOL': 'bSo13r4TkiE4xumBojwQ4o6Aeok8HA5EoqmhJFs1Ffk',
+      'INF': '5oVNBeEEQvYi1cX3ir8Dx5n1P7pdxydbGF2X4TxVusJm',
+    };
+    return mapping[symbol] || 'Unknown';
+  }
+
+  /**
+   * Fetch real prices from Jupiter Price API v4
    */
   async fetchPrices(): Promise<LivePriceData> {
     try {
+      console.log('📡 Fetching prices from Jupiter...');
       const response = await axios.get(`${this.jupiterPriceApi}/price`, {
         params: {
           ids: 'SOL,J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn,mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So,bSo13r4TkiE4xumBojwQ4o6Aeok8HA5EoqmhJFs1Ffk',
         },
-        timeout: 10000,
+        timeout: 15000,
       });
 
       const data = response.data.data;
@@ -119,7 +178,7 @@ export class LiveDataFeed {
         lastUpdated: new Date(),
       };
     } catch (error) {
-      console.error('Failed to fetch prices from Jupiter:', error);
+      console.warn('⚠️  Jupiter price API failed, using fallback prices');
       return {
         solPrice: 220,
         jitoSolPrice: 240,
@@ -131,69 +190,70 @@ export class LiveDataFeed {
   }
 
   /**
-   * Fetch real Kamino vault data
-   * API: GET https://api.kamino.finance/strategies
+   * Fetch Kamino vault data via DeFi Llama
    */
   async fetchKaminoVaults(): Promise<KaminoVault[]> {
     try {
-      const response = await axios.get(`${this.kaminoApi}/strategies`, {
-        timeout: 10000,
+      console.log('📡 Fetching Kamino vaults from DeFi Llama...');
+      const response = await axios.get(`${this.defiLlamaApi}/pools`, {
+        timeout: 15000,
       });
 
-      const strategies = response.data;
+      const pools = response.data.data || [];
       
-      // Filter for Solana strategies with good APY
-      const solanaStrategies = strategies
-        .filter((s: any) => s.token === 'SOL' || s.token === 'JitoSOL' || s.token === 'mSOL')
-        .filter((s: any) => s.apy > 0.05) // At least 5% APY
-        .slice(0, 5); // Top 5
+      // Filter for Kamino on Solana
+      const kaminoPools = pools.filter((pool: any) => 
+        pool.chain === 'Solana' && pool.project === 'kamino'
+      );
 
-      return solanaStrategies.map((s: any) => ({
-        id: s.id,
-        name: s.name,
-        strategy: s.strategyType || 'Lending',
-        apy: s.apy,
-        tvl: s.tvl || 0,
-        token: s.token,
-        risk: s.apy > 0.15 ? 'high' : s.apy > 0.10 ? 'medium' : 'low',
+      return kaminoPools.slice(0, 5).map((pool: any) => ({
+        id: pool.pool || 'unknown',
+        name: pool.symbol || 'Kamino Vault',
+        strategy: pool.poolMeta || 'Lending',
+        apy: (pool.apy || 0) / 100,
+        tvl: pool.tvlUsd || 0,
+        token: pool.symbol?.split('-')[0] || 'SOL',
+        risk: (pool.apy || 0) > 15 ? 'high' : (pool.apy || 0) > 10 ? 'medium' : 'low',
       }));
+
     } catch (error) {
-      console.error('Failed to fetch Kamino vaults:', error);
+      console.warn('⚠️  [FALLBACK - DeFi Llama unreachable] Using hardcoded Kamino data');
       return this.getFallbackKaminoData();
     }
   }
 
   /**
-   * Get comprehensive market data for decision making
+   * Get comprehensive market data
    */
-  async getMarketOverview(): Promise<{
-    lstData: LiveLSTData[];
-    kaminoVaults: KaminoVault[];
-    prices: LivePriceData;
-    bestOpportunity: { type: 'lst' | 'kamino'; data: any; apy: number };
-  }> {
-    const [lstData, kaminoVaults, prices] = await Promise.all([
+  async getMarketOverview() {
+    const [lstData, prices] = await Promise.all([
       this.fetchLiveAPYs(),
-      this.fetchKaminoVaults(),
       this.fetchPrices(),
     ]);
 
-    // Find best opportunity
+    // Kamino often fails, so we handle it separately
+    let kaminoVaults: any[] = [];
+    try {
+      kaminoVaults = await this.fetchKaminoVaults();
+    } catch (e) {
+      console.warn('⚠️  Kamino fetch failed, continuing without vaults');
+    }
+
     const bestLST = lstData[0];
     const bestKamino = kaminoVaults[0];
 
-    let bestOpportunity: { type: 'lst' | 'kamino'; data: any; apy: number };
+    let bestOpportunity;
     
     if (bestLST && bestKamino) {
       if (bestLST.apy >= bestKamino.apy) {
-        bestOpportunity = { type: 'lst', data: bestLST, apy: bestLST.apy };
+        bestOpportunity = { type: 'lst' as const, data: bestLST, apy: bestLST.apy };
       } else {
-        bestOpportunity = { type: 'kamino', data: bestKamino, apy: bestKamino.apy };
+        bestOpportunity = { type: 'kamino' as const, data: bestKamino, apy: bestKamino.apy };
       }
     } else if (bestLST) {
-      bestOpportunity = { type: 'lst', data: bestLST, apy: bestLST.apy };
+      bestOpportunity = { type: 'lst' as const, data: bestLST, apy: bestLST.apy };
     } else {
-      bestOpportunity = { type: 'kamino', data: bestKamino, apy: bestKamino?.apy || 0.08 };
+      bestOpportunity = { type: 'kamino' as const, data: bestKamino, apy: bestKamino?.apy || 0.08 };
     }
 
     return {
@@ -204,12 +264,14 @@ export class LiveDataFeed {
     };
   }
 
-  private getFallbackLSTData(): LiveLSTData[] {
+  private getFallbackLSTData(markAsFallback: boolean = false): LiveLSTData[] {
+    console.warn(markAsFallback ? '⚠️  [FALLBACK - All APIs unreachable]' : 'Using default data');
+    
     return [
-      { symbol: 'JitoSOL', mint: 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', apy: 0.08, price: 240, tvl: 500000000, lastUpdated: new Date() },
-      { symbol: 'mSOL', mint: 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', apy: 0.07, price: 235, tvl: 450000000, lastUpdated: new Date() },
-      { symbol: 'bSOL', mint: 'bSo13r4TkiE4xumBojwQ4o6Aeok8HA5EoqmhJFs1Ffk', apy: 0.065, price: 230, tvl: 200000000, lastUpdated: new Date() },
-      { symbol: 'INF', mint: '5oVNBeEEQvYi1cX3ir8Dx5n1P7pdxydbGF2X4TxVusJm', apy: 0.10, price: 250, tvl: 50000000, lastUpdated: new Date() },
+      { symbol: 'JitoSOL', mint: 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', apy: 0.08, price: 240, tvl: 500000000, lastUpdated: new Date(), isFallback: true },
+      { symbol: 'mSOL', mint: 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', apy: 0.07, price: 235, tvl: 450000000, lastUpdated: new Date(), isFallback: true },
+      { symbol: 'bSOL', mint: 'bSo13r4TkiE4xumBojwQ4o6Aeok8HA5EoqmhJFs1Ffk', apy: 0.065, price: 230, tvl: 200000000, lastUpdated: new Date(), isFallback: true },
+      { symbol: 'INF', mint: '5oVNBeEEQvYi1cX3ir8Dx5n1P7pdxydbGF2X4TxVusJm', apy: 0.10, price: 250, tvl: 50000000, lastUpdated: new Date(), isFallback: true },
     ];
   }
 
